@@ -373,9 +373,6 @@ final class LangfuseStack extends Stack {
             ),
           ),
         ),
-        retryConfig: CloudSchedulerJobSchedulerRetryConfig(
-          retryCount: TfArg.literal(0),
-        ),
         project: project,
       ),
     );
