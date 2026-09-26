@@ -5,7 +5,7 @@
 #
 # Requires `gh` authenticated as a repository admin (GH_TOKEN works) and:
 #   CLOUDFLARE_ACCOUNT_ID   Cloudflare account ID
-#   CLOUDFLARE_API_TOKEN    the one Cloudflare token (README "Cloudflare token")
+#   CLOUDFLARE_API_TOKEN    the one Cloudflare token (README "Cloudflare API token")
 #   LANGFUSE_OWNER_EMAIL    Access / alert address; stored as a secret only
 #
 # Usage: scripts/setup-github.sh
