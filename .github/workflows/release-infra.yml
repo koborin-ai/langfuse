@@ -1,5 +1,10 @@
 name: Infrastructure Release
 
+# Applies only from `main`: the job refuses other refs, the `production (infra)`
+# environment should allow only `main`, and the GCP deployer service account
+# only trusts OIDC tokens whose ref is refs/heads/main. Logs show resource
+# addresses, never attribute values.
+
 on:
   push:
     branches:
@@ -8,9 +13,9 @@ on:
       # Toolchain files are deliberately absent: a shellcheck bump should not
       # apply production infrastructure. plan-infra covers them on the PR.
       - "infra/**"
-    tags:
-      - "infra-v*"
   workflow_dispatch:
+
+permissions: {}
 
 concurrency:
   group: terraform-state
@@ -18,6 +23,7 @@ concurrency:
 
 jobs:
   terraform-apply:
+    if: github.ref == 'refs/heads/main'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
@@ -27,11 +33,16 @@ jobs:
 
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      LANGFUSE_OWNER_EMAIL: ${{ vars.LANGFUSE_OWNER_EMAIL }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      TF_VAR_owner_email: ${{ secrets.LANGFUSE_OWNER_EMAIL }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Setup toolchain
         uses: jdx/mise-action@v4
@@ -51,34 +62,35 @@ jobs:
 
       - name: Terraform Init
         working-directory: infra/tf-out/langfuse
-        env: &terraform_env
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: terraform init -input=false
+        run: terraform init -input=false -no-color >/dev/null
 
-      - name: Terraform Plan (pre-apply)
+      - name: Terraform Plan
+        id: plan
         working-directory: infra/tf-out/langfuse
-        env: *terraform_env
-        run: terraform plan -no-color -input=false
-
-      - name: Terraform Apply
-        working-directory: infra/tf-out/langfuse
-        env: *terraform_env
-        run: terraform apply -auto-approve -input=false
-
-      - name: Terraform Plan (verify no drift)
-        working-directory: infra/tf-out/langfuse
-        env: *terraform_env
         run: |
           set +e
-          terraform plan -detailed-exitcode -input=false
-          EXIT_CODE=$?
+          "${GITHUB_WORKSPACE}/.github/scripts/tf-plan-summary.sh" tfplan
+          status=$?
           set -e
-          if [ "$EXIT_CODE" -eq 2 ]; then
+          [ "$status" -ne 1 ]
+          echo "changes=$([ "$status" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # Applying a saved plan prints progress per address, not the diff.
+      - name: Terraform Apply
+        if: steps.plan.outputs.changes == 'true'
+        working-directory: infra/tf-out/langfuse
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Verify no drift
+        working-directory: infra/tf-out/langfuse
+        run: |
+          rm -f tfplan
+          set +e
+          "${GITHUB_WORKSPACE}/.github/scripts/tf-plan-summary.sh" drift.tfplan
+          status=$?
+          set -e
+          rm -f drift.tfplan
+          if [ "$status" -eq 2 ]; then
             echo "Terraform state drift detected after apply"
-            exit 1
           fi
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            exit "$EXIT_CODE"
-          fi
+          exit "$status"

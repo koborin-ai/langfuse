@@ -15,6 +15,9 @@ on:
       - ".tool-versions"
       - "mise.toml"
 
+permissions:
+  contents: read
+
 jobs:
   automation:
     name: Workflow, script, Compose and doc checks
@@ -24,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Setup toolchain
         uses: jdx/mise-action@v4

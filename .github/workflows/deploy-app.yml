@@ -3,7 +3,9 @@ name: Deploy Langfuse
 # Ships deploy/ (Compose file, scripts, systemd units) to the VM and restarts
 # what changed. No inbound port is open to the internet: the runner reaches
 # the VM through IAP TCP forwarding and OS Login, authenticated by Workload
-# Identity Federation.
+# Identity Federation. Runs only for `main`: the job refuses other refs, the
+# `production (app)` environment should allow only `main`, and the deployer
+# service account only trusts OIDC tokens whose ref is refs/heads/main.
 
 on:
   push:
@@ -19,6 +21,8 @@ on:
       - completed
   workflow_dispatch:
 
+permissions: {}
+
 concurrency:
   group: deploy-app
   cancel-in-progress: false
@@ -31,7 +35,11 @@ env:
 
 jobs:
   deploy:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: read
@@ -44,6 +52,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3

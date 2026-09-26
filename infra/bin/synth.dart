@@ -2,11 +2,10 @@
 ///
 /// Run `dart run bin/synth.dart` to emit `tf-out/langfuse/main.tf.json`.
 ///
-/// Set `CLOUDFLARE_ACCOUNT_ID` and `LANGFUSE_OWNER_EMAIL` (the one address
-/// Cloudflare Access admits and Cloud Monitoring alerts). Apply-time
-/// credentials (`CLOUDFLARE_API_TOKEN`, Google ADC from Workload Identity
-/// Federation, and the R2 keys the backend reads through
-/// `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) never reach synth.
+/// Set `CLOUDFLARE_ACCOUNT_ID`. Apply-time inputs (`CLOUDFLARE_API_TOKEN`,
+/// Google ADC from Workload Identity Federation, the R2 keys the backend
+/// reads through `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, and the
+/// sensitive `TF_VAR_owner_email`) never reach synth.
 library;
 
 import 'dart:io';
@@ -20,7 +19,6 @@ const _stateKey = 'terraform/langfuse/terraform.tfstate';
 
 Future<void> main() async {
   final accountId = Platform.environment['CLOUDFLARE_ACCOUNT_ID']!;
-  final ownerEmail = Platform.environment['LANGFUSE_OWNER_EMAIL']!;
 
   final stack = LangfuseStack(
     projectId: 'n-koborinai',
@@ -31,7 +29,6 @@ Future<void> main() async {
     cloudflareAccountId: accountId,
     zoneName: 'koborin.ai',
     hostname: 'langfuse.koborin.ai',
-    ownerEmail: ownerEmail,
     gateUiWithAccess: true,
     startupScript: File('vm/startup.sh').readAsStringSync(),
     shutdownScript: File('vm/shutdown.sh').readAsStringSync(),
