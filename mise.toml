@@ -16,7 +16,7 @@ run = ["dart pub get", "dart analyze", "dart test"]
 description = "Workflows and shell scripts: actionlint, shellcheck"
 run = [
   "actionlint",
-  "shellcheck infra/vm/*.sh deploy/bin/*.sh .github/scripts/*.sh",
+  "shellcheck infra/vm/*.sh deploy/bin/*.sh .github/scripts/*.sh scripts/*.sh",
 ]
 
 # Every required key in env.example gets a placeholder so `${VAR:?}` passes;

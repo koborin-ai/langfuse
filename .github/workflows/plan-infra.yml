@@ -16,6 +16,7 @@ on:
       - "mise.toml"
       - ".github/workflows/plan-infra.yml"
       - ".github/scripts/tf-plan-summary.sh"
+      - ".github/scripts/r2-state-credentials.sh"
   workflow_dispatch:
 
 permissions: {}
@@ -30,7 +31,7 @@ jobs:
       github.actor != 'dependabot[bot]' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -38,6 +39,8 @@ jobs:
 
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_VAR_owner_email: ${{ secrets.LANGFUSE_OWNER_EMAIL }}
 
     steps:
       - name: Checkout code
@@ -61,13 +64,11 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_PLAN_SERVICE_ACCOUNT }}
 
+      - name: Derive R2 state credentials from the Cloudflare token
+        run: bash .github/scripts/r2-state-credentials.sh
+
       - name: Terraform Plan
         working-directory: infra/tf-out/langfuse
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          TF_VAR_owner_email: ${{ secrets.LANGFUSE_OWNER_EMAIL }}
         run: |
           set -euo pipefail
           terraform init -input=false -no-color >/dev/null

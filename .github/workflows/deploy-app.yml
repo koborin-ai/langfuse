@@ -40,7 +40,7 @@ jobs:
       (github.event_name != 'workflow_run' ||
        (github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.head_branch == 'main'))
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(gcloud secrets versions list langfuse-env --filter 'state=ENABLED' --limit 1 --format 'value(name)')" ]; then
-            echo "::error::Secret langfuse-env has no enabled version. Add one (README: 'After the first apply') and re-run."
+            echo "::error::Secret langfuse-env has no enabled version. Run scripts/create-langfuse-env.sh (README: Setup, step 6) and re-run."
             exit 1
           fi
 

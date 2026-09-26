@@ -10,6 +10,7 @@ on:
       - ".github/**"
       - "deploy/**"
       - "infra/vm/**"
+      - "scripts/**"
       - "**/*.md"
       - ".markdownlint.yaml"
       - ".tool-versions"
@@ -21,7 +22,7 @@ permissions:
 jobs:
   automation:
     name: Workflow, script, Compose and doc checks
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
