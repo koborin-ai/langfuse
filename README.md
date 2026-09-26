@@ -125,11 +125,11 @@ CI uses one Cloudflare API token for the provider and, through `.github/scripts/
 | # | Who | What |
 | --- | --- | --- |
 | 1 | You (dashboard) | Cloudflare Zero Trust: enable the Free plan and pick a team name. Create the token above. |
-| 2 | Agent | `scripts/setup-github.sh` with `GH_TOKEN` (repo admin), `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `LANGFUSE_OWNER_EMAIL`. Sets variables and secrets, makes the repository public, restricts both environments to `main`, protects `main`, and sets Actions to read-only tokens with approval for external fork PRs. |
-| 3 | Agent | `scripts/bootstrap-gcp.sh` as a project owner of `n-koborinai`. Idempotent; re-running upgrades an earlier bootstrap (adds the planner, pins the provider to the repository ID, binds the deployer to `main` only). |
+| 2 | Agent | `bash scripts/setup-github.sh` with `GH_TOKEN` (repo admin), `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `LANGFUSE_OWNER_EMAIL`. Sets variables and secrets, makes the repository public, restricts both environments to `main`, protects `main`, and sets Actions to read-only tokens with approval for external fork PRs. |
+| 3 | Agent | `bash scripts/bootstrap-gcp.sh` as a project owner of `n-koborinai`. Idempotent; re-running upgrades an earlier bootstrap (adds the planner, pins the provider to the repository ID, binds the deployer to `main` only). |
 | 4 | You | Merge this repository's setup PR. `release-infra` creates the VM, tunnel, DNS, Access, and R2 buckets; the follow-up `deploy-app` run stops at "Require an app .env". |
 | 5 | You (dashboard) | R2 > Manage API tokens: create a token with **Object Read & Write** on `langfuse-blob` and `langfuse-backups` only. |
-| 6 | Agent | `scripts/create-langfuse-env.sh` with `CLOUDFLARE_ACCOUNT_ID`, `LANGFUSE_OWNER_EMAIL`, and the step 5 keys as `R2_APP_ACCESS_KEY_ID` / `R2_APP_SECRET_ACCESS_KEY`. Then `gh workflow run deploy-app.yml --repo koborin-ai/langfuse`. |
+| 6 | Agent | `bash scripts/create-langfuse-env.sh` with `CLOUDFLARE_ACCOUNT_ID`, `LANGFUSE_OWNER_EMAIL`, and the step 5 keys as `R2_APP_ACCESS_KEY_ID` / `R2_APP_SECRET_ACCESS_KEY`. Then `gh workflow run deploy-app.yml --repo koborin-ai/langfuse`. |
 | 7 | You | Open `https://langfuse.koborin.ai`, pass Access with the one-time PIN sent to the owner email, and sign in with the owner email and the generated password (see below). |
 
 Reading the generated admin password (it exists only in Secret Manager):
