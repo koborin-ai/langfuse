@@ -69,7 +69,7 @@ jobs:
         working-directory: infra/tf-out/langfuse
         run: |
           set +e
-          "${GITHUB_WORKSPACE}/.github/scripts/tf-plan-summary.sh" tfplan
+          bash "${GITHUB_WORKSPACE}/.github/scripts/tf-plan-summary.sh" tfplan
           status=$?
           set -e
           [ "$status" -ne 1 ]
@@ -86,7 +86,7 @@ jobs:
         run: |
           rm -f tfplan
           set +e
-          "${GITHUB_WORKSPACE}/.github/scripts/tf-plan-summary.sh" drift.tfplan
+          bash "${GITHUB_WORKSPACE}/.github/scripts/tf-plan-summary.sh" drift.tfplan
           status=$?
           set -e
           rm -f drift.tfplan

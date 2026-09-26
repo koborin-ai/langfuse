@@ -72,7 +72,7 @@ jobs:
           set -euo pipefail
           terraform init -input=false -no-color >/dev/null
           set +e
-          "${GITHUB_WORKSPACE}/.github/scripts/tf-plan-summary.sh" tfplan -lock=false
+          bash "${GITHUB_WORKSPACE}/.github/scripts/tf-plan-summary.sh" tfplan -lock=false
           status=$?
           set -e
           rm -f tfplan
