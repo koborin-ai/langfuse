@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up Langfuse Postgres and ClickHouse to Cloudflare R2
+After=docker.service
+Requires=docker.service
+RequiresMountsFor=/mnt/disks/data
+
+[Service]
+Type=oneshot
+ExecStart=/mnt/disks/data/langfuse/deploy/bin/backup.sh
