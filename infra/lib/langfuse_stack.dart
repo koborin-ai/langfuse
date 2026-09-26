@@ -37,7 +37,6 @@ final class LangfuseStack extends Stack {
     required String cloudflareAccountId,
     required String zoneName,
     required String hostname,
-    required String ownerEmail,
     required bool gateUiWithAccess,
     required String startupScript,
     required String shutdownScript,
@@ -51,6 +50,18 @@ final class LangfuseStack extends Stack {
     final project = TfArg.literal(projectId);
     final cfAccount = TfArg.literal(cloudflareAccountId);
     const labels = {'app': 'langfuse', 'managed-by': 'terradart'};
+
+    // The repository is public, so the owner's address never appears in
+    // synth output or plan logs; CI passes it as TF_VAR_owner_email.
+    addVariable(
+      'owner_email',
+      const TfVariable(
+        type: 'string',
+        sensitive: true,
+        description: 'Address Cloudflare Access admits and alerts go to.',
+      ),
+    );
+    final ownerEmail = TfArg.variable<String>('owner_email');
 
     // --- Project APIs -----------------------------------------------------
     // The bootstrap script enables these too, so the first apply never waits
@@ -449,9 +460,7 @@ final class LangfuseStack extends Stack {
           decision: TfArg.literal('allow'),
           include: [
             ZeroTrustAccessPolicyInclude(
-              email: ZeroTrustAccessPolicyIncludeEmail(
-                email: TfArg.literal(ownerEmail),
-              ),
+              email: ZeroTrustAccessPolicyIncludeEmail(email: ownerEmail),
             ),
           ],
           sessionDuration: TfArg.literal('24h'),
@@ -577,7 +586,7 @@ final class LangfuseStack extends Stack {
         localName: 'owner_email',
         displayName: TfArg.literal('Langfuse owner'),
         type: TfArg.literal('email'),
-        labels: TfArg.literal({'email_address': ownerEmail}),
+        labels: TfArg.literal({'email_address': r'${var.owner_email}'}),
         project: project,
       ),
     );

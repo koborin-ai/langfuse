@@ -13,7 +13,6 @@ Map<String, dynamic> _synth({bool spot = true, bool gate = true}) {
     cloudflareAccountId: 'acc-test',
     zoneName: 'koborin.ai',
     hostname: 'langfuse.koborin.ai',
-    ownerEmail: 'owner@example.com',
     gateUiWithAccess: gate,
     startupScript: '#!/bin/bash\necho start "\${HOME}"',
     shutdownScript: '#!/bin/bash\necho stop',
@@ -168,6 +167,27 @@ void main() {
     final cors = _resource(_synth(), 'cloudflare_r2_bucket_cors', 'blob');
     final rule = (cors['rules'] as List).single as Map;
     expect((rule['allowed'] as Map)['origins'], ['https://langfuse.koborin.ai']);
+  });
+
+  test('owner email is a sensitive variable, never a literal', () {
+    final json = _synth();
+    final variable = (json['variable'] as Map)['owner_email'] as Map;
+    expect(variable['sensitive'], true);
+
+    final policy = _resource(
+      json,
+      'cloudflare_zero_trust_access_policy',
+      'owner_only',
+    );
+    final include = (policy['include'] as List).single as Map;
+    expect((include['email'] as Map)['email'], r'${var.owner_email}');
+
+    final channel = _resource(
+      json,
+      'google_monitoring_notification_channel',
+      'owner_email',
+    );
+    expect(channel['labels'], {'email_address': r'${var.owner_email}'});
   });
 
   test('vm scripts are valid bash entry points', () {
