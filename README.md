@@ -78,17 +78,27 @@ flowchart LR
 | `deploy/bin/` | `install.sh` (deploy entry point), `up.sh` (render `.env`, `compose up`), `backup.sh` (Postgres and ClickHouse to R2). |
 | `deploy/systemd/` | Nightly backup timer. |
 | `.github/workflows/` | `plan-infra`, `release-infra`, `deploy-app`, `automation-ci`. |
+| `.github/scripts/tf-plan-summary.sh` | Silent `terraform plan` that logs only action and address per resource. |
 
 ## CI/CD
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `plan-infra.yml` | PR touching `infra/`, toolchain, or itself | `mise run check:infra`, synth, WIF auth, `terraform plan` into the job summary |
-| `release-infra.yml` | push to `main` touching `infra/`, `infra-v*` tag, manual | Same checks, then `terraform apply` and a no-drift plan. Environment `production (infra)` |
-| `deploy-app.yml` | push to `main` touching `deploy/`, after a successful `release-infra`, manual | Starts the VM if stopped, waits for the startup script, snapshots the data disk, copies `deploy/` over IAP SSH, runs `install.sh`, checks the public health endpoint. Environment `production (app)` |
+| `plan-infra.yml` | same-repo PR touching `infra/`, toolchain, or itself | `mise run check:infra`, synth, read-only WIF auth, `terraform plan`; logs and job summary list changed addresses only |
+| `release-infra.yml` | push to `main` touching `infra/`, manual (from `main` only) | Same checks, then apply of the saved plan and a no-drift plan. Environment `production (infra)` |
+| `deploy-app.yml` | push to `main` touching `deploy/`, after a successful `release-infra` on `main`, manual (from `main` only) | Starts the VM if stopped, waits for the startup script, snapshots the data disk, copies `deploy/` over IAP SSH, runs `install.sh`, checks the public health endpoint. Environment `production (app)` |
 | `automation-ci.yml` | PR touching workflows, scripts, Compose, or docs | actionlint, shellcheck, `docker compose config`, markdownlint |
 
 Langfuse upgrades are Dependabot PRs against `deploy/compose.yaml`. Read the release notes, merge, and `deploy-app.yml` snapshots the disk before pulling the new images. Langfuse runs its own migrations on start.
+
+### Public-repository safeguards
+
+This repository is public, and so are its Actions logs.
+
+- **No secrets in git**: app secrets live in Secret Manager; CI credentials live in GitHub secrets. The owner's email is a sensitive Terraform variable (`TF_VAR_owner_email` from the `LANGFUSE_OWNER_EMAIL` secret), never a literal in code or synth output.
+- **Fork PRs get nothing**: every workflow uses `pull_request`, never `pull_request_target`, so fork runs receive no secrets and no OIDC token. `plan-infra` additionally skips fork PRs. Workflows default to `permissions: {}` and check out without persisted credentials.
+- **Apply and deploy only from `main`**: `release-infra` and `deploy-app` refuse any other ref, run in protected environments, and authenticate as `langfuse-deployer`, which only trusts OIDC tokens with `ref == refs/heads/main`. PR plans use `langfuse-planner`, which is read-only.
+- **No plan diffs in logs**: `.github/scripts/tf-plan-summary.sh` runs `terraform plan -out` silently and prints only action and address per resource; apply uses the saved plan, so it prints progress lines, not values. Plan files are deleted and never uploaded as artifacts.
 
 ## One-time bootstrap
 
@@ -102,17 +112,25 @@ gcloud compute machine-types list \
   --format="value(zone)"
 ```
 
-If `asia-northeast1-b` is not listed, change `zone` in `infra/bin/synth.dart` and `ZONE` in `.github/workflows/deploy-app.yml` to one that is.
+As of the first bootstrap (2026-09) it is offered in `asia-northeast1-a`, `-b`, and `-c`; the stack uses `-b`. If that changes, set `zone` in `infra/bin/synth.dart` and `ZONE` in `.github/workflows/deploy-app.yml` to a listed zone.
 
-### 2. GCP: APIs, Workload Identity Federation, deployer service account
+### 2. GCP: APIs, Workload Identity Federation, two service accounts
+
+The provider only accepts tokens from this repository, pinned by its immutable ID (`1388592925`) so a deleted-and-recreated repository with the same name is not trusted. On top of that:
+
+- `langfuse-planner` (read-only) is usable from any ref of this repository, for PR plans.
+- `langfuse-deployer` (read-write) is usable only from `refs/heads/main`, for apply and deploy.
 
 ```bash
 PROJECT_ID=n-koborinai
 PROJECT_NUMBER=98679215902
 REPO=koborin-ai/langfuse
+REPO_ID=1388592925
 POOL=github-actions-pool
 PROVIDER=koborin-ai-langfuse
-SA_EMAIL="langfuse-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
+POOL_PATH="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}"
+PLANNER="langfuse-planner@${PROJECT_ID}.iam.gserviceaccount.com"
+DEPLOYER="langfuse-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
 
 gcloud config set project "${PROJECT_ID}"
 
@@ -123,25 +141,57 @@ gcloud services enable \
   secretmanager.googleapis.com cloudscheduler.googleapis.com \
   monitoring.googleapis.com logging.googleapis.com
 
-# Reuse the pool if koborin-ai/site created it earlier.
-gcloud iam workload-identity-pools describe "${POOL}" --location=global >/dev/null 2>&1 ||
-  gcloud iam workload-identity-pools create "${POOL}" \
-    --location=global --display-name="GitHub Actions"
+# Reuse the pool if koborin-ai/site created it earlier. A deleted pool still
+# answers `describe` (state DELETED, kept 30 days) and must be undeleted.
+pool_state="$(gcloud iam workload-identity-pools describe "${POOL}" \
+  --location=global --format='value(state)' 2>/dev/null || true)"
+case "${pool_state}" in
+  ACTIVE) ;;
+  DELETED) gcloud iam workload-identity-pools undelete "${POOL}" --location=global ;;
+  *) gcloud iam workload-identity-pools create "${POOL}" \
+       --location=global --display-name="GitHub Actions" ;;
+esac
 
-gcloud iam workload-identity-pools providers create-oidc "${PROVIDER}" \
-  --location=global \
-  --workload-identity-pool="${POOL}" \
-  --display-name="koborin-ai/langfuse" \
-  --issuer-uri="https://token.actions.githubusercontent.com" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
-  --attribute-condition="assertion.repository == '${REPO}'"
+# Same for the provider; `update-oidc` also brings an existing provider up to
+# the current mapping and condition.
+provider_flags=(
+  --location=global
+  --workload-identity-pool="${POOL}"
+  --display-name="koborin-ai/langfuse"
+  --issuer-uri="https://token.actions.githubusercontent.com"
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref"
+  --attribute-condition="assertion.repository == '${REPO}' && assertion.repository_id == '${REPO_ID}'"
+)
+provider_state="$(gcloud iam workload-identity-pools providers describe "${PROVIDER}" \
+  --location=global --workload-identity-pool="${POOL}" --format='value(state)' 2>/dev/null || true)"
+case "${provider_state}" in
+  DELETED)
+    gcloud iam workload-identity-pools providers undelete "${PROVIDER}" \
+      --location=global --workload-identity-pool="${POOL}"
+    gcloud iam workload-identity-pools providers update-oidc "${PROVIDER}" "${provider_flags[@]}" ;;
+  ACTIVE) gcloud iam workload-identity-pools providers update-oidc "${PROVIDER}" "${provider_flags[@]}" ;;
+  *) gcloud iam workload-identity-pools providers create-oidc "${PROVIDER}" "${provider_flags[@]}" ;;
+esac
 
-gcloud iam service-accounts create langfuse-deployer \
-  --display-name="koborin-ai/langfuse GitHub Actions"
-
-gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
+# Read-only planner: any ref of this repository (PR plans).
+gcloud iam service-accounts describe "${PLANNER}" >/dev/null 2>&1 ||
+  gcloud iam service-accounts create langfuse-planner \
+    --display-name="koborin-ai/langfuse plan (read-only)"
+gcloud iam service-accounts add-iam-policy-binding "${PLANNER}" \
   --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}/attribute.repository/${REPO}"
+  --member="principalSet://iam.googleapis.com/${POOL_PATH}/attribute.repository/${REPO}"
+for role in roles/viewer roles/iam.securityReviewer roles/secretmanager.viewer; do
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${PLANNER}" --role="${role}" --condition=None
+done
+
+# Deployer: only tokens whose ref is refs/heads/main (release-infra, deploy-app).
+gcloud iam service-accounts describe "${DEPLOYER}" >/dev/null 2>&1 ||
+  gcloud iam service-accounts create langfuse-deployer \
+    --display-name="koborin-ai/langfuse apply and deploy (main only)"
+gcloud iam service-accounts add-iam-policy-binding "${DEPLOYER}" \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/${POOL_PATH}/attribute.ref/refs/heads/main"
 
 for role in \
   roles/compute.admin \
@@ -154,22 +204,42 @@ for role in \
   roles/monitoring.editor \
   roles/serviceusage.serviceUsageAdmin; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member="serviceAccount:${SA_EMAIL}" --role="${role}" --condition=None
+    --member="serviceAccount:${DEPLOYER}" --role="${role}" --condition=None
 done
 
-# Project IAM admin, but only for the two roles the stack grants the VM.
+# Project IAM admin, but only for the two roles the stack grants the VM. The
+# expression contains commas, which `--condition=KEY=VALUE,...` would split,
+# so it goes through a file.
+condition_file="$(mktemp)"
+cat >"${condition_file}" <<'EOF'
+title: langfuse-vm-roles-only
+description: Deployer may grant only the Langfuse VM's logging and metrics roles.
+expression: "api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.logWriter', 'roles/monitoring.metricWriter'])"
+EOF
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="serviceAccount:${SA_EMAIL}" \
+  --member="serviceAccount:${DEPLOYER}" \
   --role=roles/resourcemanager.projectIamAdmin \
-  --condition="title=langfuse-vm-roles-only,expression=api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.logWriter', 'roles/monitoring.metricWriter'])"
+  --condition-from-file="${condition_file}"
+rm -f "${condition_file}"
 
-echo "GCP_WORKLOAD_IDENTITY_PROVIDER=projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}/providers/${PROVIDER}"
-echo "GCP_SERVICE_ACCOUNT=${SA_EMAIL}"
+echo "GCP_WORKLOAD_IDENTITY_PROVIDER=${POOL_PATH}/providers/${PROVIDER}"
+echo "GCP_PLAN_SERVICE_ACCOUNT=${PLANNER}"
+echo "GCP_SERVICE_ACCOUNT=${DEPLOYER}"
+```
+
+The `attribute.ref/refs/heads/main` binding matches any workflow on `main` of this repository (the provider condition already excludes other repositories), so protect `main` as described in step 4.
+
+The whole block is safe to re-run. If the project was bootstrapped with an earlier revision of this README, which let the deployer be impersonated from any ref, also drop that binding:
+
+```bash
+gcloud iam service-accounts remove-iam-policy-binding "${DEPLOYER}" \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/${POOL_PATH}/attribute.repository/${REPO}"
 ```
 
 Terraform state stays in the existing R2 bucket `koborin-ai-tfstate` under `terraform/langfuse/terraform.tfstate`; there is no GCS state bucket to create.
 
-Optional budget alert (billing budgets live on the billing account, not in this stack). Use the billing account's currency, e.g. `10000JPY` for a JPY account:
+Optional budget alert. Budgets live on the billing account, not the project, so project Owner is not enough: the caller needs `roles/billing.costsManager` (or Billing Account Administrator) on that billing account. Use the billing account's currency, e.g. `10000JPY` for a JPY account:
 
 ```bash
 BILLING_ACCOUNT="$(gcloud billing projects describe "${PROJECT_ID}" --format='value(billingAccountName)' | cut -d/ -f2)"
@@ -196,14 +266,19 @@ gcloud billing budgets create \
 | Kind | Name | Value |
 | --- | --- | --- |
 | Variable | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
-| Variable | `LANGFUSE_OWNER_EMAIL` | Address Access admits and alerts are sent to |
 | Variable | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Printed by step 2 |
-| Variable | `GCP_SERVICE_ACCOUNT` | Printed by step 2 |
+| Variable | `GCP_PLAN_SERVICE_ACCOUNT` | Printed by step 2 (`langfuse-planner`) |
+| Variable | `GCP_SERVICE_ACCOUNT` | Printed by step 2 (`langfuse-deployer`) |
+| Secret | `LANGFUSE_OWNER_EMAIL` | Address Access admits and alerts are sent to (a secret so it is masked in public logs) |
 | Secret | `CLOUDFLARE_API_TOKEN` | Token from step 3 |
 | Secret | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | State bucket keys from step 3 |
-| Environment | `production (infra)`, `production (app)` | Add required reviewers if wanted |
 
-Also grant the Blacksmith GitHub App access to this repository; the workflows run on `blacksmith-*` runners like koborin-ai/site.
+Protection settings for a public repository:
+
+1. **Environments** `production (infra)` and `production (app)`: Deployment branches and tags = Selected, `main` only. Add yourself as a required reviewer if every apply/deploy should wait for approval.
+2. **Branch protection / ruleset on `main`**: require a pull request and block force pushes, so nothing reaches `main` (and the deployer service account) without review.
+3. **Actions > General**: Fork pull request workflows = "Require approval for all external contributors"; Workflow permissions = "Read repository contents".
+4. **Blacksmith**: grant the Blacksmith GitHub App access to this repository; the workflows run on `blacksmith-*` runners like koborin-ai/site.
 
 ### 5. First apply
 
