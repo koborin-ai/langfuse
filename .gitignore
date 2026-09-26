@@ -1,0 +1,27 @@
+# Dart
+.dart_tool/
+infra/pubspec.lock
+
+# Terraform
+infra/tf-out/
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Rendered secrets
+.env
+.env.*
+!deploy/env.example
+
+# Local data when running Compose off the VM
+deploy/.data/
+
+# mise local overrides
+mise.local.toml
+.mise.local.toml
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+*.swp
