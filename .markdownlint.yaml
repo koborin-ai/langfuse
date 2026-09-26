@@ -29,7 +29,7 @@ MD032: true
 
 # Inline HTML (allow for special formatting)
 MD033:
-  allowed_elements: ["br", "sub", "sup", "kbd", "mark"]
+  allowed_elements: ["br", "sub", "sup", "kbd", "mark", "details", "summary", "code"]
 
 # Bare URL used (allow for reference links)
 MD034: false

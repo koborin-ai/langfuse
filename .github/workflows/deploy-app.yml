@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(gcloud secrets versions list langfuse-env --filter 'state=ENABLED' --limit 1 --format 'value(name)')" ]; then
-            echo "::error::Secret langfuse-env has no enabled version. Run scripts/create-langfuse-env.sh (README: Setup, step 6) and re-run."
+            echo "::error::Secret langfuse-env has no enabled version. Run scripts/create-langfuse-env.sh (README: One-time bootstrap) and re-run."
             exit 1
           fi
 
