@@ -1,0 +1,132 @@
+name: Deploy Langfuse
+
+# Ships deploy/ (Compose file, scripts, systemd units) to the VM and restarts
+# what changed. No inbound port is open to the internet: the runner reaches
+# the VM through IAP TCP forwarding and OS Login, authenticated by Workload
+# Identity Federation.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "deploy/**"
+      - ".github/workflows/deploy-app.yml"
+  workflow_run:
+    workflows:
+      - Infrastructure Release
+    types:
+      - completed
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-app
+  cancel-in-progress: false
+
+env:
+  ZONE: asia-northeast1-b
+  REGION: asia-northeast1
+  INSTANCE: langfuse
+  HEALTH_URL: https://langfuse.koborin.ai/api/public/health
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 30
+    environment: production (app)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Require an app .env in Secret Manager
+        run: |
+          set -euo pipefail
+          if [ -z "$(gcloud secrets versions list langfuse-env --filter 'state=ENABLED' --limit 1 --format 'value(name)')" ]; then
+            echo "::error::Secret langfuse-env has no enabled version. Add one (README: 'After the first apply') and re-run."
+            exit 1
+          fi
+
+      - name: Ensure the VM is running
+        run: |
+          set -euo pipefail
+          status="$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" --format='value(status)')"
+          echo "VM status: $status"
+          if [ "$status" != "RUNNING" ]; then
+            gcloud compute instances start "$INSTANCE" --zone "$ZONE"
+          fi
+
+      - name: Wait for the startup script
+        run: |
+          set -euo pipefail
+          # "inactive" alone is ambiguous right after boot, so also require
+          # the two things install.sh needs: the data disk and Docker.
+          # shellcheck disable=SC2016 # expanded on the VM
+          probe='s=$(systemctl show -p ActiveState --value google-startup-scripts.service)
+          if [ "$s" != failed ] && ! { command -v docker && mountpoint -q /mnt/disks/data; } >/dev/null 2>&1; then s=activating; fi
+          echo "$s"'
+          for attempt in $(seq 1 40); do
+            state="$(gcloud compute ssh "$INSTANCE" --zone "$ZONE" --tunnel-through-iap \
+              --quiet --strict-host-key-checking=no --ssh-key-expire-after=1h \
+              --command "$probe" 2>/dev/null | tail -n1 || echo unreachable)"
+            echo "attempt ${attempt}: startup script ${state}"
+            case "$state" in
+              active|inactive) exit 0 ;;
+              failed) echo "startup script failed; check the serial console" >&2; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "timed out waiting for the VM" >&2
+          exit 1
+
+      - name: Snapshot the data disk
+        run: |
+          set -euo pipefail
+          gcloud compute snapshots create "langfuse-predeploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --source-disk langfuse-data --source-disk-zone "$ZONE" \
+            --storage-location "$REGION" \
+            --labels app=langfuse,kind=predeploy
+          # Keep the three newest pre-deploy snapshots.
+          gcloud compute snapshots list \
+            --filter 'labels.kind=predeploy' --sort-by '~creationTimestamp' --format 'value(name)' |
+            tail -n +4 | xargs -r gcloud compute snapshots delete --quiet
+
+      - name: Ship deploy/ and restart
+        env:
+          REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          staging="/tmp/langfuse-deploy-${REVISION}"
+          ssh_flags=(--zone "$ZONE" --tunnel-through-iap --quiet --strict-host-key-checking=no --ssh-key-expire-after=1h)
+          gcloud compute ssh "$INSTANCE" "${ssh_flags[@]}" --command "rm -rf /tmp/langfuse-deploy-*"
+          gcloud compute scp --recurse "${ssh_flags[@]}" deploy "${INSTANCE}:${staging}"
+          gcloud compute ssh "$INSTANCE" "${ssh_flags[@]}" \
+            --command "sudo bash ${staging}/bin/install.sh ${staging} ${REVISION}"
+
+      - name: Check public health endpoint
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 20); do
+            if curl -fsS --max-time 10 "$HEALTH_URL"; then
+              echo
+              exit 0
+            fi
+            echo "attempt ${attempt}: not healthy yet"
+            sleep 15
+          done
+          exit 1

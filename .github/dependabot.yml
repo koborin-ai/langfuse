@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # Langfuse, ClickHouse, cloudflared, Postgres, and Redis image tags in
+  # deploy/compose.yaml. Read the Langfuse release notes before merging; the
+  # merge triggers deploy-app.yml, which snapshots the data disk first.
+  - package-ecosystem: docker-compose
+    directory: /deploy
+    schedule:
+      interval: weekly
+    groups:
+      langfuse:
+        patterns:
+          - "langfuse/*"
+    ignore:
+      # Majors (Langfuse v5, Postgres 18, Redis 8) need a migration plan.
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: pub
+    directory: /infra
+    schedule:
+      interval: weekly
+    groups:
+      dart-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

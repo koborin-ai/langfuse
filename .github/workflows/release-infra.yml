@@ -1,0 +1,84 @@
+name: Infrastructure Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Toolchain files are deliberately absent: a shellcheck bump should not
+      # apply production infrastructure. plan-infra covers them on the PR.
+      - "infra/**"
+    tags:
+      - "infra-v*"
+  workflow_dispatch:
+
+concurrency:
+  group: terraform-state
+  cancel-in-progress: false
+
+jobs:
+  terraform-apply:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 30
+    environment: production (infra)
+
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      LANGFUSE_OWNER_EMAIL: ${{ vars.LANGFUSE_OWNER_EMAIL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup toolchain
+        uses: jdx/mise-action@v4
+
+      - name: Analyze and test
+        run: mise run check:infra
+
+      - name: Synth Terraform config
+        working-directory: infra
+        run: dart run bin/synth.dart
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Terraform Init
+        working-directory: infra/tf-out/langfuse
+        env: &terraform_env
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: terraform init -input=false
+
+      - name: Terraform Plan (pre-apply)
+        working-directory: infra/tf-out/langfuse
+        env: *terraform_env
+        run: terraform plan -no-color -input=false
+
+      - name: Terraform Apply
+        working-directory: infra/tf-out/langfuse
+        env: *terraform_env
+        run: terraform apply -auto-approve -input=false
+
+      - name: Terraform Plan (verify no drift)
+        working-directory: infra/tf-out/langfuse
+        env: *terraform_env
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -input=false
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -eq 2 ]; then
+            echo "Terraform state drift detected after apply"
+            exit 1
+          fi
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            exit "$EXIT_CODE"
+          fi
