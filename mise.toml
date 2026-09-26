@@ -1,0 +1,39 @@
+# Task definitions for the repository. Tool versions live in `.tool-versions`,
+# which mise reads natively, so CI and laptops resolve the same versions.
+#
+# Locally: install mise (`curl https://mise.run | sh`), then `mise install`.
+
+[tasks.check]
+description = "Run every quality gate in the repository"
+depends = ["check:*"]
+
+[tasks."check:infra"]
+description = "TerraDart: static analysis and synth unit tests"
+dir = "infra"
+run = ["dart pub get", "dart analyze", "dart test"]
+
+[tasks."check:automation"]
+description = "Workflows and shell scripts: actionlint, shellcheck"
+run = [
+  "actionlint",
+  "shellcheck infra/vm/*.sh deploy/bin/*.sh .github/scripts/*.sh scripts/*.sh",
+]
+
+# Every required key in env.example gets a placeholder so `${VAR:?}` passes;
+# this only proves the Compose file parses and interpolates.
+[tasks."check:deploy"]
+description = "Compose: docker compose config against env.example"
+run = '''
+set -eu
+env_file="$(mktemp)"
+sed 's/=$/=ci-placeholder/' deploy/env.example >"$env_file"
+echo "TUNNEL_TOKEN=ci-placeholder" >>"$env_file"
+docker compose -f deploy/compose.yaml --env-file "$env_file" config --quiet
+rm -f "$env_file"
+'''
+
+# Not in .tool-versions: mise's npm backend refuses markdownlint-cli2 because a
+# transitive dependency lost its publish provenance. Pinned here instead.
+[tasks."check:docs"]
+description = "Markdown docs: markdownlint over every tracked .md"
+run = 'npx --yes markdownlint-cli2@0.23.2 "**/*.md" "!**/node_modules/**"'

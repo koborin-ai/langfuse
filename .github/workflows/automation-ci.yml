@@ -1,0 +1,44 @@
+name: Automation CI
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - ".github/**"
+      - "deploy/**"
+      - "infra/vm/**"
+      - "scripts/**"
+      - "**/*.md"
+      - ".markdownlint.yaml"
+      - ".tool-versions"
+      - "mise.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  automation:
+    name: Workflow, script, Compose and doc checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: jdx/mise-action@v4
+
+      - name: Lint workflows and scripts
+        run: mise run check:automation
+
+      - name: Validate Compose file
+        run: mise run check:deploy
+
+      - name: Lint Markdown docs
+        run: mise run check:docs
