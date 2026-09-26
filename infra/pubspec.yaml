@@ -1,0 +1,15 @@
+name: koborin_ai_langfuse_infra
+description: TerraDart infrastructure for langfuse.koborin.ai (Dart → Terraform).
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  terradart_cloudflare: ^0.28.1
+  terradart_core: ^0.28.1
+  terradart_google: ^0.28.1
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.31.2
