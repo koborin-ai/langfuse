@@ -23,7 +23,8 @@ Quick guide for contributors and AI agents working on `koborin-ai/langfuse`.
 6. **Compose drift from upstream**: `deploy/compose.yaml` lists every difference from the upstream file in its header. Keep that list current when re-syncing.
 7. **Data disk**: `langfuse-data` has `prevent_destroy`. Never change anything that would replace it without a restore plan.
 8. **Public repository**: never use `pull_request_target`; keep `permissions: {}` as the workflow default; apply/deploy jobs stay gated to `main`; never print `terraform plan` / `show` output with values (use `.github/scripts/tf-plan-summary.sh`); personal data goes through sensitive variables or secrets, not literals.
-9. **Strings in tf.json are templates**: shell `${VAR}` inside literals must be escaped (`_escapeTemplate`). Run `terraform validate` on synth output when changing embedded text.
+9. **Power state belongs to `vm-power.yml`**: the Scheduler job's `paused` flag and the uptime alert policy's `enabled` flag stay in `ignore_changes`, and the workflow finds the policy by its display name. Never set `desired_status` on the VM.
+10. **Strings in tf.json are templates**: shell `${VAR}` inside literals must be escaped (`_escapeTemplate`). Run `terraform validate` on synth output when changing embedded text.
 
 ## Checks
 

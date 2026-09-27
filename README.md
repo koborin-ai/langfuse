@@ -15,8 +15,8 @@ Source: [`docs/architecture.drawio`](docs/architecture.drawio) (Cloudflare orang
 - **No inbound ports**: the VPC has no external IPs. `cloudflared` dials out, and egress (Docker Hub, R2, Google APIs) goes through Cloud NAT. SSH is allowed only from the IAP range, via OS Login.
 - **State**: Postgres, ClickHouse, Redis, and the deployed Compose files live on the `langfuse-data` disk (`prevent_destroy`, daily snapshots), so the VM can be recreated freely. Trace events, media, and batch exports go to R2 `langfuse-blob`; nightly dumps go to R2 `langfuse-backups`.
 - **Secrets**: the app `.env` is Secret Manager `langfuse-env` (versions added by hand, never in Terraform state). The tunnel token is `cloudflared-token`, written by Terraform through a write-only attribute. `deploy/bin/up.sh` renders both into `deploy/.env` on every boot and deploy.
-- **Spot recovery**: preemption stops (not deletes) the VM. Cloud Scheduler calls `instances.start` every 5 minutes, and the startup script brings Compose back up.
-- **Alerts** (email to the owner): uptime check on `/api/public/health` failing for 15 minutes, disk above 80%, memory above 90%.
+- **Spot recovery**: preemption stops (not deletes) the VM. Cloud Scheduler calls `instances.start` every 5 minutes, and the startup script brings Compose back up. Pausing that job is how Langfuse is [stopped on purpose](#stop-and-start-langfuse).
+- **Alerts** (email to the owner): uptime check on `/api/public/health` failing for 15 minutes, disk above 80%, memory above 90%. The uptime alert is disabled while Langfuse is stopped on purpose.
 
 ### CI/CD
 
@@ -34,10 +34,17 @@ flowchart TB
     end
 
     subgraph DEP["deploy-app · env production (app) · langfuse-deployer"]
-        D1["require a langfuse-env version"] --> D2["start VM if stopped,<br/>wait for startup.sh"] --> D3["snapshot langfuse-data<br/>(keep newest 3)"] --> D4["scp deploy/ over IAP,<br/>sudo bin/install.sh"] --> D5["curl /api/public/health"]
+        D1["require a langfuse-env version"] --> D2["start VM if stopped,<br/>wait for startup.sh"] --> D3["snapshot langfuse-data<br/>(keep newest 3)"] --> D4["scp deploy/ over IAP,<br/>sudo bin/install.sh"] --> D5["curl /api/public/health"] --> D6["stop VM again if<br/>stopped on purpose"]
     end
 
     R4 -->|"workflow_run: success"| D1
+
+    OWNER(["Run workflow<br/>(main)"]) --> P1
+    subgraph PWR["vm-power · env production (app) · langfuse-deployer"]
+        P1{"action"} -->|"stop"| PS["pause langfuse-start-vm,<br/>disable uptime alert,<br/>stop VM"]
+        P1 -->|"start"| PA["resume langfuse-start-vm,<br/>enable uptime alert,<br/>start VM, wait for health"]
+    end
+    PWR -.-|"concurrency group langfuse-vm"| DEP
 ```
 
 All jobs authenticate to GCP with Workload Identity Federation (GitHub OIDC, no service-account keys): `langfuse-planner` is read-only and usable from any ref; `langfuse-deployer` only from `refs/heads/main`.
@@ -63,8 +70,8 @@ This repository and its Actions logs are public, so:
 | `deploy/env.example` | Keys of the `langfuse-env` secret, without values. |
 | `deploy/bin/` | `install.sh` (deploy entry point), `up.sh` (render `.env`, `compose up`), `backup.sh` (Postgres and ClickHouse to R2). |
 | `deploy/systemd/` | `langfuse-backup.timer` / `.service`. |
-| `.github/workflows/` | `plan-infra`, `release-infra`, `deploy-app`, `automation-ci`. |
-| `.github/scripts/` | Plan summary and R2 state-credential helpers used by the infra workflows. |
+| `.github/workflows/` | `plan-infra`, `release-infra`, `deploy-app`, `vm-power`, `automation-ci`. |
+| `.github/scripts/` | Plan summary and R2 state-credential helpers used by the infra workflows; `vm-power.sh` (start / stop / intent) used by `vm-power` and `deploy-app`. |
 | `scripts/` | One-time bootstrap scripts (see below). |
 | `docs/` | Architecture diagram: draw.io source and SVG export. |
 | `.tool-versions`, `mise.toml` | Pinned toolchain and the `mise run check` task tree. |
@@ -81,6 +88,38 @@ This repository and its Actions logs are public, so:
 Never run `terraform apply` or `docker compose` changes from a laptop. Read-only inspection over IAP SSH is fine.
 
 ## Day-2 operations
+
+### Stop and start Langfuse
+
+Stop the VM when Langfuse is not needed and start it again for a demo. Run **Langfuse Power** from the Actions tab on `main`, or:
+
+```bash
+gh workflow run vm-power.yml --repo koborin-ai/langfuse -f action=stop    # or start / status
+```
+
+| Action | What it does |
+| --- | --- |
+| `stop` | Pauses the Scheduler job `langfuse-start-vm` (so Spot recovery does not boot the VM again), disables the `Langfuse is unreachable` alert policy, and stops the VM. `infra/vm/shutdown.sh` stops Compose cleanly first. |
+| `start` | Resumes the job, enables the alert policy, starts the VM, and waits up to 15 minutes for `/api/public/health`. If Spot capacity is short, the resumed job keeps retrying every 5 minutes. |
+| `status` | Prints the intent (job enabled or paused), the VM status, and whether the uptime alert is enabled. |
+
+The job's state is the record of intent, so:
+
+- Stop through the workflow, not the console: a VM stopped by hand while the job is enabled is started again within 5 minutes.
+- Terraform ignores the job's `paused` flag and the alert policy's `enabled` flag, so `release-infra` (apply and the drift check) passes in either state and never turns Langfuse back on.
+- `deploy-app` still runs while Langfuse is stopped: it boots the VM, ships the files, checks health, and stops the VM again, leaving the job paused and the alert disabled.
+- While stopped, SDK calls to `/api/public/*` fail (Cloudflare returns an error for the unreachable tunnel), daily disk snapshots continue (near zero while nothing changes), and the nightly R2 backup catches up once after the next boot (`Persistent=true`).
+
+Approximate monthly cost in `asia-northeast1` (list prices, checked 2026-09; Spot prices move):
+
+| Item | Running | Stopped |
+| --- | --- | --- |
+| `t2d-standard-4` Spot (~$0.045/h) | ~$33 | $0 |
+| `pd-balanced` 100 GB data + 20 GB boot (~$0.10/GB) | ~$12 | ~$12 |
+| Snapshots, Cloud NAT gateway and IP | ~$2-5 | ~$1-4 |
+| **Total** | **~$47-50** | **~$13-16** |
+
+Scheduler (3 free jobs), uptime checks, Monitoring, Secret Manager, and R2 at this size stay in free tiers. With `spot: false`, the VM alone is ~$158.
 
 ### Upgrade Langfuse
 
@@ -116,7 +155,7 @@ Trace blobs in R2 `langfuse-blob` are not backed up separately.
 
 1. GCE sends the preemption notice; `infra/vm/shutdown.sh` runs `docker compose stop -t 25` so the databases shut down cleanly within the ~30 s window.
 2. The VM is stopped (`instance_termination_action = STOP`); disks are kept.
-3. Cloud Scheduler `langfuse-start-vm` calls `instances.start` every 5 minutes (a no-op while running) until capacity returns.
+3. Cloud Scheduler `langfuse-start-vm` calls `instances.start` every 5 minutes (a no-op while running) until capacity returns. It is paused only while Langfuse is [stopped on purpose](#stop-and-start-langfuse).
 4. `infra/vm/startup.sh` mounts the data disk and runs `deploy/bin/up.sh`, which re-renders `.env` and starts Compose.
 
 The uptime alert allows 15 minutes of failures, which covers a normal preemption. If Spot capacity stays unavailable (the alert fires and restarts keep failing), set `spot: false` in `infra/bin/synth.dart` and open a PR.
@@ -211,7 +250,7 @@ One token serves the Terraform provider and, through `.github/scripts/r2-state-c
 ### Notes
 
 - Terraform state: R2 `koborin-ai-tfstate`, key `terraform/langfuse/terraform.tfstate`.
-- T2D is available in `asia-northeast1-a`, `-b`, and `-c` (checked 2026-09). To move zones, change `zone` in `infra/bin/synth.dart` and `ZONE` in `deploy-app.yml`.
+- T2D is available in `asia-northeast1-a`, `-b`, and `-c` (checked 2026-09). To move zones, change `zone` in `infra/bin/synth.dart` and `ZONE` in `deploy-app.yml` and `vm-power.yml`.
 - An optional budget alert lives on the billing account and needs `roles/billing.costsManager` there: `gcloud billing budgets create --billing-account=<id> --display-name="n-koborinai monthly" --budget-amount=70USD --filter-projects=projects/n-koborinai --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0`.
 
 </details>
