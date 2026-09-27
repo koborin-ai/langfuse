@@ -329,6 +329,8 @@ final class LangfuseStack extends Stack {
     );
 
     // --- Spot recovery: start the VM every 5 minutes (no-op when running) --
+    // `vm-power.yml` pauses this job to keep the VM stopped on purpose, so
+    // the paused flag is operational state that Terraform must not reset.
     final starterSa = add(
       GoogleServiceAccount(
         localName: 'starter',
@@ -374,6 +376,7 @@ final class LangfuseStack extends Stack {
           ),
         ),
         project: project,
+        lifecycle: const LifecycleOptions(ignoreChanges: ['paused']),
       ),
     );
 
@@ -616,6 +619,8 @@ final class LangfuseStack extends Stack {
 
     // 15 minutes of failures before paging: a Spot preemption plus the
     // 5-minute Scheduler restart and Compose boot stays under that.
+    // `vm-power.yml` disables this policy while the VM is stopped on purpose
+    // and finds it by display name, so `enabled` is left to the workflow.
     add(
       GoogleMonitoringAlertPolicy(
         localName: 'uptime',
@@ -647,6 +652,7 @@ final class LangfuseStack extends Stack {
           ),
         ],
         project: project,
+        lifecycle: const LifecycleOptions(ignoreChanges: ['enabled']),
       ),
     );
 

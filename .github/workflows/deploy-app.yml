@@ -23,8 +23,9 @@ on:
 
 permissions: {}
 
+# Shared with vm-power.yml so a deploy and a power change never interleave.
 concurrency:
-  group: deploy-app
+  group: langfuse-vm
   cancel-in-progress: false
 
 env:
@@ -70,6 +71,16 @@ jobs:
             echo "::error::Secret langfuse-env has no enabled version. Run scripts/create-langfuse-env.sh (README: One-time bootstrap) and re-run."
             exit 1
           fi
+
+      # A VM stopped on purpose (vm-power.yml) is booted for the deploy and
+      # stopped again at the end, so the files on disk stay current.
+      - name: Read power intent
+        id: intent
+        run: |
+          set -euo pipefail
+          intent="$(bash .github/scripts/vm-power.sh intent)"
+          echo "Power intent: ${intent}"
+          echo "state=${intent}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure the VM is running
         run: |
@@ -139,3 +150,7 @@ jobs:
             sleep 15
           done
           exit 1
+
+      - name: Stop the VM again (stopped on purpose)
+        if: always() && steps.intent.outputs.state == 'stopped'
+        run: bash .github/scripts/vm-power.sh stop
