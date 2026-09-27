@@ -1,0 +1,6 @@
+# actionlint 1.7.12 predates `concurrency.queue` (GitHub, 2026-05). Drop this
+# once a release accepts it.
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
