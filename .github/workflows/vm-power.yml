@@ -4,8 +4,9 @@ name: Langfuse Power
 # the Spot-recovery Scheduler job, disables the uptime alert, and stops the
 # VM; `start` reverses that and waits for /api/public/health. Disks, snapshots,
 # and backups are unaffected. Runs only for `main`, in the main-only
-# `production (app)` environment, as langfuse-deployer. Shares a concurrency
-# group with deploy-app so a deploy and a power change never interleave.
+# `production (app)` environment, as langfuse-deployer. Shares a queued
+# concurrency group with deploy-app so a deploy and a power change never
+# interleave and neither cancels the other; runs execute in dispatch order.
 
 on:
   workflow_dispatch:
@@ -25,6 +26,7 @@ permissions: {}
 concurrency:
   group: langfuse-vm
   cancel-in-progress: false
+  queue: max
 
 env:
   ZONE: asia-northeast1-b

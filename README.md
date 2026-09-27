@@ -44,7 +44,7 @@ flowchart TB
         P1{"action"} -->|"stop"| PS["pause langfuse-start-vm,<br/>disable uptime alert,<br/>stop VM"]
         P1 -->|"start"| PA["resume langfuse-start-vm,<br/>enable uptime alert,<br/>start VM, wait for health"]
     end
-    PWR -.-|"concurrency group langfuse-vm"| DEP
+    PWR -.-|"queued concurrency group langfuse-vm"| DEP
 ```
 
 All jobs authenticate to GCP with Workload Identity Federation (GitHub OIDC, no service-account keys): `langfuse-planner` is read-only and usable from any ref; `langfuse-deployer` only from `refs/heads/main`.
@@ -106,6 +106,7 @@ gh workflow run vm-power.yml --repo koborin-ai/langfuse -f action=stop    # or s
 The job's state is the record of intent, so:
 
 - Stop through the workflow, not the console: a VM stopped by hand while the job is enabled is started again within 5 minutes.
+- `vm-power` and `deploy-app` share the concurrency group `langfuse-vm` with `queue: max`: a power run dispatched during a deploy waits for it and then runs; nothing is cancelled. The run's summary shows the final state.
 - Terraform ignores the job's `paused` flag and the alert policy's `enabled` flag, so `release-infra` (apply and the drift check) passes in either state and never turns Langfuse back on.
 - `deploy-app` still runs while Langfuse is stopped: it boots the VM, ships the files, checks health, and stops the VM again, leaving the job paused and the alert disabled.
 - While stopped, SDK calls to `/api/public/*` fail (Cloudflare returns an error for the unreachable tunnel), daily disk snapshots continue (near zero while nothing changes), and the nightly R2 backup catches up once after the next boot (`Persistent=true`).

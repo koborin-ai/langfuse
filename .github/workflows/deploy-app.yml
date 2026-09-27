@@ -24,9 +24,12 @@ on:
 permissions: {}
 
 # Shared with vm-power.yml so a deploy and a power change never interleave.
+# `queue: max` makes later runs wait in order; the default replaces the one
+# pending run, which silently dropped a queued power change.
 concurrency:
   group: langfuse-vm
   cancel-in-progress: false
+  queue: max
 
 env:
   ZONE: asia-northeast1-b
