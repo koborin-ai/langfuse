@@ -103,6 +103,18 @@ void main() {
     );
   });
 
+  test('vm-power.yml owns the job pause and uptime alert switch', () {
+    final json = _synth();
+    final job = _resource(json, 'google_cloud_scheduler_job', 'start_vm');
+    expect(job.containsKey('paused'), isFalse);
+    expect((job['lifecycle'] as Map)['ignore_changes'], ['paused']);
+
+    final uptime = _resource(json, 'google_monitoring_alert_policy', 'uptime');
+    expect(uptime['display_name'], 'Langfuse is unreachable');
+    expect(uptime.containsKey('enabled'), isFalse);
+    expect((uptime['lifecycle'] as Map)['ignore_changes'], ['enabled']);
+  });
+
   test('tunnel token lands in Secret Manager as write-only data', () {
     final version = _resource(
       _synth(),
