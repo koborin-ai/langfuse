@@ -1,0 +1,93 @@
+name: Langfuse Power
+
+# Turns Langfuse off when unused and back on, to save VM cost. `stop` pauses
+# the Spot-recovery Scheduler job, disables the uptime alert, and stops the
+# VM; `start` reverses that and waits for /api/public/health. Disks, snapshots,
+# and backups are unaffected. Runs only for `main`, in the main-only
+# `production (app)` environment, as langfuse-deployer. Shares a concurrency
+# group with deploy-app so a deploy and a power change never interleave.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status: report only. start: resume Spot recovery, boot, wait for health. stop: pause Spot recovery, mute the uptime alert, shut down."
+        type: choice
+        required: true
+        default: status
+        options:
+          - status
+          - start
+          - stop
+
+permissions: {}
+
+concurrency:
+  group: langfuse-vm
+  cancel-in-progress: false
+
+env:
+  ZONE: asia-northeast1-b
+  REGION: asia-northeast1
+  INSTANCE: langfuse
+  HEALTH_URL: https://langfuse.koborin.ai/api/public/health
+
+jobs:
+  power:
+    name: ${{ inputs.action }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 30
+    environment: production (app)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Power ${{ inputs.action }}
+        if: inputs.action != 'status'
+        env:
+          ACTION: ${{ inputs.action }}
+        run: bash .github/scripts/vm-power.sh "$ACTION"
+
+      # Boot, startup.sh, and Compose's --wait usually take 3-6 minutes.
+      - name: Wait for the public health endpoint
+        if: inputs.action == 'start'
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl -fsS --max-time 10 "$HEALTH_URL"; then
+              echo
+              exit 0
+            fi
+            echo "attempt ${attempt}: not healthy yet"
+            sleep 15
+          done
+          echo "::error::Langfuse did not become healthy within 15 minutes. Spot recovery stays on and keeps retrying."
+          exit 1
+
+      - name: Summary
+        if: always()
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Langfuse power: ${ACTION}"
+            echo
+            bash .github/scripts/vm-power.sh status
+          } | tee -a "$GITHUB_STEP_SUMMARY"
