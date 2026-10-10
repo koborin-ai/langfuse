@@ -23,7 +23,7 @@ x-logging: &logging
 
 services:
   langfuse-worker:
-    image: docker.io/langfuse/langfuse-worker:4.47.0
+    image: docker.io/langfuse/langfuse-worker:4.53.0
     restart: unless-stopped
     logging: *logging
     depends_on: &langfuse-depends-on
@@ -83,7 +83,7 @@ services:
       start_period: 120s
 
   langfuse-web:
-    image: docker.io/langfuse/langfuse:4.47.0
+    image: docker.io/langfuse/langfuse:4.53.0
     restart: unless-stopped
     logging: *logging
     depends_on: *langfuse-depends-on
