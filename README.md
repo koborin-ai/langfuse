@@ -12,8 +12,8 @@ Terraform does not delete the Workload Identity setup, the unmanaged GCE snapsho
 
 1. Stop Langfuse with the current `vm-power.yml` and `action=stop`. That keeps the VM and the nightly backup from writing. Wait until no Deploy Langfuse or Langfuse Power run is queued.
 2. Empty the R2 buckets `langfuse-blob` and `langfuse-backups`, including incomplete multipart uploads. The provider returns 409 if either bucket still has objects.
-3. Delete the Workload Identity pool `github-actions-pool`, the provider `koborin-ai-langfuse`, and the service accounts `langfuse-planner` and `langfuse-deployer` created by `scripts/bootstrap-gcp.sh`.
-4. Delete GCE snapshots that Terraform does not manage. Pre-deploy snapshots use the label `kind=predeploy`. The daily policy `langfuse-data-daily` also leaves snapshots. `on_source_disk_delete` is `KEEP_AUTO_SNAPSHOTS`, and those snapshots are not Terraform resources.
+3. Delete the Workload Identity pool `github-actions-pool`, the provider `koborin-ai-langfuse`, and the service accounts `langfuse-planner` and `langfuse-deployer` created by `scripts/bootstrap-gcp.sh`. Deleting a service account leaves its project IAM bindings. Remove those bindings too.
+4. Delete GCE snapshots that Terraform does not manage. Pre-deploy snapshots use the label `kind=predeploy`. The daily policy `langfuse-data-daily` also leaves snapshots. `on_source_disk_delete` is `KEEP_AUTO_SNAPSHOTS`, and those snapshots are not Terraform resources. The 7-day retention applies only while that policy exists. After the policy is destroyed, the snapshots stay until you delete them.
 5. Revoke the R2 app token and the CI Cloudflare API token. The R2 app token has Object Read & Write on `langfuse-blob` and `langfuse-backups`.
 6. Delete the GitHub secrets `CLOUDFLARE_API_TOKEN` and `LANGFUSE_OWNER_EMAIL`, the GitHub variables set by `scripts/setup-github.sh`, and the environments `production (infra)` and `production (app)`.
 7. Delete the state object `terraform/langfuse/terraform.tfstate` in the R2 bucket `koborin-ai-tfstate`. Do this after the destroy has been applied. The backend bucket itself stays.
