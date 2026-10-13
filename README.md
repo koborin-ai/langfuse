@@ -1,8 +1,27 @@
 # koborin-ai/langfuse
 
-Self-hosted [Langfuse](https://langfuse.com) v4 at `https://langfuse.koborin.ai`, for koborin.ai demos and experiments.
+## Decommissioned
 
-One GCE Spot VM in `n-koborinai` runs the upstream Docker Compose stack. The VM has no public IP; browsers and SDKs reach it only through a Cloudflare Tunnel, and the UI sits behind Cloudflare Access. Infrastructure is a [TerraDart](https://pub.dev/packages/terradart_core) stack, and both Terraform apply and app deploys run only in GitHub Actions on `main`.
+Merging this change makes `release-infra` destroy every Terraform-managed resource. The destroy includes the data disk, the snapshot policy, and the R2 buckets `langfuse-blob` and `langfuse-backups`.
+
+`cloudflare_r2_bucket` has no `force_destroy`. A non-empty bucket fails the apply with HTTP 409. Empty both buckets before merging. If the apply stops on 409, empty the bucket and rerun Infrastructure Release. A rerun deletes what remains and creates nothing.
+
+Project APIs stay enabled. Each `google_project_service` was declared with `disable_on_destroy = false`. Destroying those resources removes them from state and does not disable the APIs.
+
+Terraform does not delete the Workload Identity setup, the unmanaged GCE snapshots, the Cloudflare tokens, the GitHub secrets and environments, or the state object. Do these steps in order. Steps 1 and 2 come before the merge. Steps 3 through 8 come after the release is green.
+
+1. Stop Langfuse with the current `vm-power.yml` and `action=stop`. That keeps the VM and the nightly backup from writing. Wait until no Deploy Langfuse or Langfuse Power run is queued.
+2. Empty the R2 buckets `langfuse-blob` and `langfuse-backups`, including incomplete multipart uploads. The provider returns 409 if either bucket still has objects.
+3. Delete the Workload Identity pool `github-actions-pool`, the provider `koborin-ai-langfuse`, and the service accounts `langfuse-planner` and `langfuse-deployer` created by `scripts/bootstrap-gcp.sh`. Deleting a service account leaves its project IAM bindings. Remove those bindings too.
+4. Delete GCE snapshots that Terraform does not manage. Pre-deploy snapshots use the label `kind=predeploy`. The daily policy `langfuse-data-daily` also leaves snapshots. `on_source_disk_delete` is `KEEP_AUTO_SNAPSHOTS`, and those snapshots are not Terraform resources. The 7-day retention applies only while that policy exists. After the policy is destroyed, the snapshots stay until you delete them.
+5. Revoke the R2 app token and the CI Cloudflare API token. The R2 app token has Object Read & Write on `langfuse-blob` and `langfuse-backups`.
+6. Delete the GitHub secrets `CLOUDFLARE_API_TOKEN` and `LANGFUSE_OWNER_EMAIL`, the GitHub variables set by `scripts/setup-github.sh`, and the environments `production (infra)` and `production (app)`.
+7. Delete the state object `terraform/langfuse/terraform.tfstate` in the R2 bucket `koborin-ai-tfstate`. Do this after the destroy has been applied. The backend bucket itself stays.
+8. Archive the repository.
+
+The sections below describe the deployment this merge removes. They are not steps for a service that is still running.
+
+One GCE Spot VM in `n-koborinai` ran the upstream Docker Compose stack. The VM has no public IP; browsers and SDKs reach it only through a Cloudflare Tunnel, and the UI sits behind Cloudflare Access. Infrastructure is a [TerraDart](https://pub.dev/packages/terradart_core) stack, and both Terraform apply and app deploys run only in GitHub Actions on `main`.
 
 ## Architecture
 
